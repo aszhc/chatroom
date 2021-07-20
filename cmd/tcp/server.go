@@ -16,7 +16,7 @@ var (
 	// 用户离开，通过该 channel 进行登记
 	leavingChannel = make(chan *User)
 	// 广播专用的用户普通消息 channel，缓冲是尽可能避免出现异常情况堵塞，这里简单给了 8，具体值根据情况调整
-	messageChannel = make(chan string, 8)
+	messageChannel = make(chan Message, 8)
 )
 
 func main() {
@@ -54,7 +54,10 @@ func broadcaster() {
 		case msg := <-messageChannel:
 			// 给所有在线用户发送消息
 			for user := range users {
-				user.MessageChannel <- msg
+				if user.ID == msg.OwnerID {
+					continue
+				}
+				user.MessageChannel <- msg.Content
 			}
 		}
 	}
@@ -77,7 +80,11 @@ func handleConn(conn net.Conn) {
 
 	// 3. 给当前用户发送欢迎信息；给所有用户告知新用户到来
 	user.MessageChannel <- "欢迎：" + user.String()
-	messageChannel <- "用户:`" + strconv.Itoa(user.ID) + "` 进入"
+	msg := Message{
+		OwnerID: user.ID,
+		Content: "user:`" + strconv.Itoa(user.ID) + "` has enter",
+	}
+	messageChannel <- msg
 
 	// 4. 将该记录到全局的用户列表中，避免用锁
 	enteringChannel <- user
@@ -98,10 +105,11 @@ func handleConn(conn net.Conn) {
 	// 5. 循环读取用户的输入
 	input := bufio.NewScanner(conn)
 	for input.Scan() {
-		messageChannel <- strconv.Itoa(user.ID) + ":" + input.Text()
-	}
+		msg.Content = strconv.Itoa(user.ID) + ":" + input.Text()
+		messageChannel <- msg
 
-	userActive <- struct{}{}
+		userActive <- struct{}{} // 每当用户发送消息，重新计时
+	}
 
 	if err := input.Err(); err != nil {
 		log.Println("读取错误：", err)
@@ -109,7 +117,8 @@ func handleConn(conn net.Conn) {
 
 	// 6. 用户离开
 	leavingChannel <- user
-	messageChannel <- "用户:`" + strconv.Itoa(user.ID) + "` 离开"
+	msg.Content = "用户:`" + strconv.Itoa(user.ID) + "` 离开"
+	messageChannel <- msg
 }
 
 type User struct {
@@ -141,4 +150,10 @@ func GenUserID() int {
 
 	globalID++
 	return globalID
+}
+
+// 给用户发送的消息
+type Message struct {
+	OwnerID int
+	Content string
 }
